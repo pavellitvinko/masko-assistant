@@ -114,6 +114,14 @@ struct EventRow: View {
                     }
                 }
 
+                if let message = event.message, !message.isEmpty {
+                    Text(message)
+                        .font(Constants.body(size: 12))
+                        .foregroundColor(Constants.textMuted)
+                        .lineLimit(2)
+                        .padding(.top, 1)
+                }
+
                 HStack {
                     if let projectName = event.projectName {
                         Text(projectName)

@@ -22,11 +22,40 @@ final class AppStore {
     let sessionSwitcherStore = SessionSwitcherStore()
     let sessionFinishedStore = SessionFinishedStore()
     let approvalHistoryStore = ApprovalHistoryStore()
+    private let defaults: UserDefaults
+
+    // Spatial & behavior
+    private(set) var desktopTopology: DesktopTopology?
+    private(set) var movementController: MovementController?
+    private(set) var behaviorEngine: BehaviorEngine?
+    private(set) var contextPoller: ContextPoller?
+    private(set) var screenpipeClient: ScreenpipeClient?
+    private(set) var ollamaClient: OllamaClient?
+    private(set) var screenpipeHealth: ServiceHealth = .offline
+    private(set) var isScreenpipeAudioCaptureDetected = false
+    private(set) var ollamaHealth: ServiceHealth = .offline
+    private var smartHealthTimer: Timer?
 
     private(set) var eventProcessor: EventProcessor!
     private(set) var isReady = false
     private(set) var isRunning = false
     private var lastReconcileDate: Date = .distantPast
+    private(set) var smartFeatureSettings: SmartFeatureSettings {
+        didSet {
+            guard oldValue != smartFeatureSettings else { return }
+            smartFeatureSettings.persist(in: defaults)
+            guard isRunning else { return }
+            applySmartFeatureLifecycle()
+        }
+    }
+    #if DEBUG
+    private(set) var debugCommentInterestThresholdOverride: Double? {
+        didSet {
+            guard oldValue != debugCommentInterestThresholdOverride else { return }
+            BehaviorDebugSettings.persist(debugCommentInterestThresholdOverride, in: defaults)
+        }
+    }
+    #endif
 
     /// Cached IDE detection results — survives across SettingsView recreations.
     /// Updated by SettingsView.task and install/uninstall actions.
@@ -87,12 +116,26 @@ final class AppStore {
     }
     var isAssistantEventIngestionActive: Bool { assistantEventIngestionStatus.isActive }
     var assistantEventIngestionStatusText: String { assistantEventIngestionStatus.text }
+    var screenpipeHealthText: String { screenpipeHealth.displayText }
+    var screenpipeAudioWarningText: String? {
+        guard isScreenpipeAudioCaptureDetected else { return nil }
+        return "Screenpipe audio capture detected. Restart with --disable-audio."
+    }
+    var ollamaHealthText: String { ollamaHealth.displayText }
 
-    var hasCompletedOnboarding: Bool = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding") {
-        didSet { UserDefaults.standard.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
+    var hasCompletedOnboarding: Bool {
+        didSet { defaults.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
     }
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        SmartFeatureSettings.registerDefaults(in: defaults)
+        SmartFeatureSettings.migrateLegacySettings(in: defaults)
+        self.smartFeatureSettings = SmartFeatureSettings.load(from: defaults)
+        self.hasCompletedOnboarding = defaults.bool(forKey: "hasCompletedOnboarding")
+        #if DEBUG
+        self.debugCommentInterestThresholdOverride = BehaviorDebugSettings.load(from: defaults)
+        #endif
         self.eventProcessor = EventProcessor(
             eventStore: eventStore,
             sessionStore: sessionStore,
@@ -167,6 +210,11 @@ final class AppStore {
                 }
 
                 self.onEventForOverlay?(event)
+                
+                // Feed agent events to behavior engine for reactions
+                if self.smartFeatureSettings.behaviorEnabled {
+                    self.behaviorEngine?.onAgentEvent(event)
+                }
             }
         }
 
@@ -406,6 +454,30 @@ final class AppStore {
         }
     }
 
+    var behaviorPolicy: BehaviorPolicy {
+        BehaviorPolicy.make(
+            debugCommentInterestThresholdOverride: {
+                #if DEBUG
+                debugCommentInterestThresholdOverride
+                #else
+                nil
+                #endif
+            }()
+        )
+    }
+
+    func updateSmartFeatureSettings(_ update: (inout SmartFeatureSettings) -> Void) {
+        var next = smartFeatureSettings
+        update(&next)
+        smartFeatureSettings = next
+    }
+
+    #if DEBUG
+    func setDebugCommentInterestThresholdOverride(_ value: Double?) {
+        debugCommentInterestThresholdOverride = value
+    }
+    #endif
+
     /// Recompute which overlay card has priority and sync to the hotkey shared state.
     /// Call whenever any card's visibility changes.
     func syncActiveCard() {
@@ -431,6 +503,98 @@ final class AppStore {
         // Evict cached videos older than 30 days
         VideoCache.shared.evictStaleFiles()
 
+        // ── Spatial awareness ──
+        let topology = DesktopTopology()
+        let surfaces = SurfaceGraph()
+        let windowTracker = WindowTracker()
+        self.desktopTopology = topology
+        
+        // WindowTracker -> SurfaceGraph & BehaviorEngine wiring
+        windowTracker.onEvent = { [weak self] event in
+            if let snapshot = self?.desktopTopology?.currentSnapshot {
+                surfaces.update(with: snapshot)
+            }
+            // behaviorEngine gets this via its poll loop actually, 
+            // but we could push immediate events here
+        }
+
+        // ── Perception ──
+        let spClient = ScreenpipeClient()
+        let poller = ContextPoller(
+            screenpipeClient: spClient,
+            fallback: FallbackPerception(topology: topology),
+            settingsProvider: { [weak self] in
+                self?.smartFeatureSettings ?? .default
+            }
+        )
+        self.screenpipeClient = spClient
+        self.contextPoller = poller
+        poller.onHealthChanged = { [weak self] health in
+            Task { @MainActor in
+                self?.screenpipeHealth = health
+            }
+        }
+        
+        // Wire contextPoller -> Activity Feed (EventStore)
+        poller.onContextChanged = { [weak self] snapshot in
+            guard let self else { return }
+            let textSnippet = snapshot.visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " ")
+            let displayMessage = "\(snapshot.appName) - \(snapshot.windowTitle)\n\(textSnippet)"
+            
+            let event = AgentEvent(
+                hookEventName: HookEventType.perception.rawValue,
+                message: displayMessage,
+                title: "Screen context updated"
+            )
+            Task { @MainActor in
+                self.eventStore.append(event)
+                self.behaviorEngine?.onContextChanged(snapshot)
+            }
+        }
+
+        // ── LLM ──
+        let ollama = OllamaClient()
+        self.ollamaClient = ollama
+
+        // ── Brain ──
+        let state = InnerState.restore()
+        let engine = BehaviorEngine(
+            innerState: state,
+            contextPoller: poller,
+            windowTracker: windowTracker,
+            ollamaClient: ollama,
+            settingsProvider: { [weak self] in
+                self?.smartFeatureSettings ?? .default
+            },
+            policyProvider: { [weak self] in
+                self?.behaviorPolicy ?? BehaviorPolicy.make()
+            }
+        )
+        self.behaviorEngine = engine
+        engine.onCommentaryHealthChanged = { [weak self] health in
+            Task { @MainActor in
+                self?.ollamaHealth = health
+                self?.behaviorEngine?.setOllamaHealth(health)
+            }
+        }
+        
+        // Wire behavior -> movement
+        engine.onMovement = { [weak self] command in
+            Task { @MainActor in
+                self?.movementController?.execute(command)
+            }
+        }
+
+        // ── Navigation ──
+        let movement = MovementController(surfaces: surfaces, topology: topology)
+        self.movementController = movement
+
+        // ── Start lifecycle based on current toggles ──
+        applySmartFeatureLifecycle()
+        startSmartHealthTimer()
+        refreshSmartServiceHealth()
+
         // Only request permissions if onboarding is done.
         // During onboarding, each permission is requested by its dedicated step.
         if hasCompletedOnboarding {
@@ -453,17 +617,15 @@ final class AppStore {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                let now = Date()
-                if now.timeIntervalSince(self.lastReconcileDate) >= 30 {
-                    self.lastReconcileDate = now
-                    self.sessionStore.reconcileIfNeeded()
-                }
-                // Retry hotkey manager if not yet active (user may have just granted Accessibility)
-                if !self.hotkeyManager.isActive {
-                    self.hotkeyManager.start()
-                }
+            guard let self else { return }
+            let now = Date()
+            if now.timeIntervalSince(self.lastReconcileDate) >= 30 {
+                self.lastReconcileDate = now
+                self.sessionStore.reconcileIfNeeded()
+            }
+            // Retry hotkey manager if not yet active (user may have just granted Accessibility)
+            if !self.hotkeyManager.isActive {
+                self.hotkeyManager.start()
             }
         }
 
@@ -473,16 +635,103 @@ final class AppStore {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
-                self?.stop()
-            }
+            self?.stop()
         }
 
         isReady = true
     }
 
+    func applySmartFeatureLifecycle() {
+        if smartFeatureSettings.spatialEnabled || smartFeatureSettings.behaviorEnabled {
+            desktopTopology?.startPolling()
+        } else {
+            desktopTopology?.stopPolling()
+        }
+
+        if smartFeatureSettings.spatialEnabled {
+            movementController?.start()
+        } else {
+            movementController?.stop()
+        }
+
+        if smartFeatureSettings.behaviorEnabled {
+            contextPoller?.start()
+        } else {
+            contextPoller?.stop()
+            screenpipeHealth = .offline
+            isScreenpipeAudioCaptureDetected = false
+        }
+
+        if smartFeatureSettings.behaviorEnabled {
+            behaviorEngine?.start()
+        } else {
+            behaviorEngine?.stop()
+        }
+
+        if !smartFeatureSettings.ollamaEnabled {
+            ollamaHealth = .offline
+            behaviorEngine?.setOllamaHealth(.offline)
+        }
+
+        refreshSmartServiceHealth()
+    }
+
+    private func startSmartHealthTimer() {
+        smartHealthTimer?.invalidate()
+        smartHealthTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: true) { [weak self] _ in
+            self?.refreshSmartServiceHealth()
+        }
+    }
+
+    func refreshSmartServiceHealth() {
+        Task { [weak self] in
+            guard let self else { return }
+
+            let screenpipeResult: (health: ServiceHealth, audioDetected: Bool)
+            if self.smartFeatureSettings.behaviorEnabled && self.smartFeatureSettings.screenpipeEnabled {
+                let pollerHealth = self.contextPoller?.health ?? .offline
+                let healthSnapshot = await self.screenpipeClient?.fetchHealth()
+                let audioDetected = healthSnapshot?.isAudioCaptureDetected ?? false
+
+                if pollerHealth == .offline {
+                    let healthy = healthSnapshot?.isHealthy == true
+                    screenpipeResult = (healthy ? .degraded : .offline, audioDetected)
+                } else {
+                    screenpipeResult = (audioDetected ? .degraded : pollerHealth, audioDetected)
+                }
+            } else {
+                screenpipeResult = (.offline, false)
+            }
+
+            let nextOllamaHealth: ServiceHealth
+            if self.smartFeatureSettings.behaviorEnabled && self.smartFeatureSettings.ollamaEnabled {
+                let healthy = await self.ollamaClient?.checkHealth() ?? false
+                nextOllamaHealth = healthy ? .connected : .offline
+            } else {
+                nextOllamaHealth = .offline
+            }
+
+            await MainActor.run {
+                self.screenpipeHealth = screenpipeResult.health
+                self.isScreenpipeAudioCaptureDetected = screenpipeResult.audioDetected
+                self.ollamaHealth = nextOllamaHealth
+                self.behaviorEngine?.setOllamaHealth(nextOllamaHealth)
+            }
+        }
+    }
+
+    func triggerCommentaryProbe() {
+        behaviorEngine?.triggerCommentaryProbe()
+    }
+
     /// Tear down adapters and timers to prevent zombie processes
     func stop() {
+        smartHealthTimer?.invalidate()
+        smartHealthTimer = nil
+        contextPoller?.stop()
+        behaviorEngine?.stop()
+        movementController?.stop()
+        desktopTopology?.stopPolling()
         eventBus.stopAll()
         sessionStore.stopTimers()
         pendingPermissionStore.stopTimers()

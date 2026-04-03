@@ -24,9 +24,7 @@ final class EventProcessor {
         sessionStore.recordEvent(event)
 
         if let notification = createNotification(from: event) {
-            if notification.category != .permissionRequest {
-                notificationStore.append(notification)
-            }
+            notificationStore.append(notification)
             await notificationService.show(notification)
         }
     }

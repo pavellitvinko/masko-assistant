@@ -182,6 +182,84 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Spatial awareness", isOn: smartFeatureBinding(\.spatialEnabled))
+                    .foregroundColor(Constants.textPrimary)
+                Text("Mascot walks on window edges and follows your active app")
+                    .font(Constants.body(size: 11))
+                    .foregroundColor(Constants.textMuted)
+
+                Toggle("Autonomous behavior", isOn: smartFeatureBinding(\.behaviorEnabled))
+                    .foregroundColor(Constants.textPrimary)
+                Text("Mascot has moods, idle behaviors, and reacts to events")
+                    .font(Constants.body(size: 11))
+                    .foregroundColor(Constants.textMuted)
+
+                Toggle("Screen perception", isOn: smartFeatureBinding(\.screenpipeEnabled))
+                    .foregroundColor(Constants.textPrimary)
+                    .disabled(!appStore.smartFeatureSettings.behaviorEnabled)
+                if appStore.smartFeatureSettings.screenpipeEnabled && appStore.smartFeatureSettings.behaviorEnabled {
+                    HStack {
+                        Text("Screenpipe Status")
+                            .font(Constants.body(size: 12))
+                        Spacer()
+                        Text(appStore.screenpipeHealthText)
+                            .font(Constants.body(size: 12))
+                            .foregroundColor(color(for: appStore.screenpipeHealth))
+                    }
+                    Text("Masko reads from an external screenpipe service; launch it separately with --disable-audio.")
+                        .font(Constants.body(size: 11))
+                        .foregroundColor(Constants.textMuted)
+                    if let warning = appStore.screenpipeAudioWarningText {
+                        Text(warning)
+                            .font(Constants.body(size: 11))
+                            .foregroundColor(.red)
+                    }
+                }
+                Text("Reads screen text via screenpipe for context-aware reactions")
+                    .font(Constants.body(size: 11))
+                    .foregroundColor(Constants.textMuted)
+
+                Toggle("AI commentary", isOn: smartFeatureBinding(\.ollamaEnabled))
+                    .foregroundColor(Constants.textPrimary)
+                    .disabled(!appStore.smartFeatureSettings.behaviorEnabled)
+                if appStore.smartFeatureSettings.ollamaEnabled && appStore.smartFeatureSettings.behaviorEnabled {
+                    HStack {
+                        Text("Ollama Status")
+                            .font(Constants.body(size: 12))
+                        Spacer()
+                        Text(appStore.ollamaHealthText)
+                            .font(Constants.body(size: 12))
+                            .foregroundColor(color(for: appStore.ollamaHealth))
+                    }
+                }
+                Text("Generates witty one-liners about what's on screen")
+                    .font(Constants.body(size: 11))
+                    .foregroundColor(Constants.textMuted)
+
+                #if DEBUG
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Debug comment threshold")
+                            .font(Constants.body(size: 12))
+                        Spacer()
+                        Text(debugThresholdLabel)
+                            .font(Constants.body(size: 12))
+                            .foregroundColor(Constants.textMuted)
+                    }
+                    Slider(value: debugThresholdBinding, in: 0...12, step: 0.5)
+
+                    Button("Reset Debug Override") {
+                        appStore.setDebugCommentInterestThresholdOverride(nil)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundColor(Constants.orangePrimary)
+                }
+                #endif
+            } header: {
+                Text("Smart Mascot").font(Constants.heading(size: 13, weight: .semibold))
+            }
+
+            Section {
                 // Per-IDE status list
                 ForEach(ideStatuses) { ide in
                     HStack {
@@ -438,6 +516,9 @@ struct SettingsView: View {
             ideExtensionInstalled = statuses.contains { $0.isInstalled }
             appStore.cachedIDEStatuses = statuses
         }
+        .task {
+            appStore.refreshSmartServiceHealth()
+        }
         .sheet(isPresented: $showConnectionDoctor) {
             ConnectionDoctorView()
                 .environment(appStore)
@@ -452,6 +533,49 @@ struct SettingsView: View {
             Text("This will remove Claude Code hooks, delete all local data, and quit the app. You can reinstall anytime.")
         }
     }
+
+    private func color(for health: ServiceHealth) -> Color {
+        switch health {
+        case .connected:
+            return .green
+        case .degraded:
+            return .orange
+        case .offline:
+            return .red
+        }
+    }
+
+    private func smartFeatureBinding(_ keyPath: WritableKeyPath<SmartFeatureSettings, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { appStore.smartFeatureSettings[keyPath: keyPath] },
+            set: { value in
+                appStore.updateSmartFeatureSettings { settings in
+                    settings[keyPath: keyPath] = value
+                }
+            }
+        )
+    }
+
+    #if DEBUG
+    private var debugThresholdBinding: Binding<Double> {
+        Binding(
+            get: {
+                appStore.debugCommentInterestThresholdOverride
+                    ?? Double(BehaviorPolicy.defaultInterestThreshold)
+            },
+            set: { value in
+                appStore.setDebugCommentInterestThresholdOverride(value)
+            }
+        )
+    }
+
+    private var debugThresholdLabel: String {
+        if let override = appStore.debugCommentInterestThresholdOverride {
+            return String(format: "%.1f", override)
+        }
+        return "Default"
+    }
+    #endif
 
     private func applyPort() {
         portError = nil
@@ -695,4 +819,3 @@ struct ShortcutRecorderView: View {
         }
     }
 }
-

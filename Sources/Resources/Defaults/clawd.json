@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "name": "Clippy",
+  "name": "Clawd",
   "canvasName": "Claude Code 4-State",
   "initialNode": "ea862f46-4906-4487-94dc-1506c8849d80",
   "autoPlay": true,

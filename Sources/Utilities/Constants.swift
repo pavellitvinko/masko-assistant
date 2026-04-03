@@ -92,4 +92,39 @@ enum Constants {
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
+
+    // MARK: - Smart Mascot Extension
+
+    static let spatialEnabledKey = "spatial_enabled"
+    static let behaviorEnabledKey = "behavior_enabled"
+    static let screenpipeEnabledKey = "screenpipe_enabled"
+    static let ollamaEnabledKey = "ollama_enabled"
+    static let smartSettingsMigrationVersionKey = "smart_settings_migration_version"
+    static let legacySmartFeatureKeys = [
+        "ollama_debug_logging",
+        "behavior_debug_logging",
+        "speech_enabled",
+        "comment_frequency",
+        "ollama_model",
+        "perception_emit_every_ocr",
+        "comment_cooldown_seconds",
+        "comment_interest_threshold",
+        "comment_error_boost",
+        "comment_success_boost",
+        "comment_dedupe_enabled",
+        "comment_suppress_repeated_context",
+        "comment_require_screenpipe_context",
+        "comment_require_ollama_health",
+        "comment_require_cooldown",
+        "comment_require_interest_threshold",
+        "screenpipe_executable",
+        "screenpipe_arguments"
+    ]
+
+    static let topologyPollInterval: TimeInterval = 1.0
+    static let contextPollInterval: TimeInterval = 10.0
+    static let behaviorTickRange: ClosedRange<TimeInterval> = 4.0...8.0
+    static let screenpipeBaseURL = "http://localhost:3030"
+    static let ollamaBaseURL = "http://localhost:11434"
+    static let defaultOllamaModel = "gemma3:1b"
 }

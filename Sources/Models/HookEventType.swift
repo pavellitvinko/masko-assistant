@@ -20,6 +20,7 @@ enum HookEventType: String, Codable, CaseIterable, Identifiable {
     case configChange = "ConfigChange"
     case worktreeCreate = "WorktreeCreate"
     case worktreeRemove = "WorktreeRemove"
+    case perception = "Perception"
 
     var id: String { rawValue }
 
@@ -44,6 +45,7 @@ enum HookEventType: String, Codable, CaseIterable, Identifiable {
         case .configChange: "Config Changed"
         case .worktreeCreate: "Worktree Created"
         case .worktreeRemove: "Worktree Removed"
+        case .perception: "Screen Perception"
         }
     }
 
@@ -68,6 +70,7 @@ enum HookEventType: String, Codable, CaseIterable, Identifiable {
         case .configChange: "gearshape"
         case .worktreeCreate: "folder.badge.plus"
         case .worktreeRemove: "folder.badge.minus"
+        case .perception: "eye"
         }
     }
 
@@ -79,6 +82,7 @@ enum HookEventType: String, Codable, CaseIterable, Identifiable {
         case .stop, .taskCompleted: "blue"
         case .postToolUseFailure: "red"
         case .preToolUse, .postToolUse: "purple"
+        case .perception: "blue"
         default: "secondary"
         }
     }
