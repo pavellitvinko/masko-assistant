@@ -1,24 +1,25 @@
 import Foundation
 
 class BehaviorScheduler {
-    private var timer: Timer?
+    private var task: Task<Void, Never>?
     var onTick: (() -> Void)?
     
     func start() {
         stop()
-        scheduleNext()
+        task = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let interval = Double.random(in: Constants.behaviorTickRange)
+                let duration = UInt64(interval * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: duration)
+                if Task.isCancelled { break }
+                self.onTick?()
+            }
+        }
     }
     
     func stop() {
-        timer?.invalidate()
-        timer = nil
-    }
-    
-    private func scheduleNext() {
-        let interval = Double.random(in: Constants.behaviorTickRange)
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
-            self?.onTick?()
-            self?.scheduleNext()
-        }
+        task?.cancel()
+        task = nil
     }
 }

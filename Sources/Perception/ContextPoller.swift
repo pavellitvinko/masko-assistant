@@ -7,6 +7,7 @@ class ContextPoller {
     private var pollTask: Task<Void, Never>?
     
     var onContextChanged: ((ContextSnapshot) -> Void)?
+    var onSnapshot: ((ContextSnapshot) -> Void)?
     var onHealthChanged: ((ServiceHealth) -> Void)?
     private(set) var current: ContextSnapshot?
     private(set) var history: [ContextSnapshot] = []
@@ -92,6 +93,7 @@ class ContextPoller {
         
         let changed = isChanged(snapshot)
         self.current = snapshot
+        onSnapshot?(snapshot)
         
         if changed {
             history.append(snapshot)
@@ -140,7 +142,7 @@ class ContextPoller {
                     limit: Self.scopedQueryLimit,
                     appName: activeHint.appName,
                     windowName: preferredWindow.isEmpty ? nil : activeHint.windowTitle,
-                    minLength: Self.scopedMinLength
+                    minLength: nil
                 )
             )
 
@@ -149,7 +151,7 @@ class ContextPoller {
                     limit: Self.scopedQueryLimit,
                     appName: activeHint.appName,
                     windowName: nil,
-                    minLength: Self.relaxedMinLength
+                    minLength: nil
                 )
             )
         }
@@ -159,7 +161,7 @@ class ContextPoller {
                 limit: Self.globalQueryLimit,
                 appName: nil,
                 windowName: nil,
-                minLength: Self.scopedMinLength
+                minLength: nil
             )
         )
 
@@ -177,9 +179,9 @@ class ContextPoller {
             return activeMatch
         }
 
-        if let bestOverall = bestMeaningfulContext(in: contexts) {
-            debugLog("Selecting best overall meaningful context app=\(bestOverall.app_name) window=\(bestOverall.window_name)")
-            return bestOverall
+        if let focused = newestFocusedContext(in: contexts) {
+            debugLog("Selecting newest focused context app=\(focused.app_name) window=\(focused.window_name)")
+            return focused
         }
 
         let newest = contexts.max(by: { timestamp(for: $0) < timestamp(for: $1) })
@@ -239,62 +241,16 @@ class ContextPoller {
         return formatter
     }()
 
-    private func bestMeaningfulContext(in contexts: [ScreenpipeClient.ScreenpipeContext]) -> ScreenpipeClient.ScreenpipeContext? {
-        guard !contexts.isEmpty else { return nil }
-        return contexts.max(by: { qualityScore(for: $0) < qualityScore(for: $1) })
+    private func newestFocusedContext(
+        in contexts: [ScreenpipeClient.ScreenpipeContext]
+    ) -> ScreenpipeClient.ScreenpipeContext? {
+        contexts
+            .filter { $0.focused == true }
+            .max(by: { timestamp(for: $0) < timestamp(for: $1) })
     }
 
-    private func qualityScore(for context: ScreenpipeClient.ScreenpipeContext) -> Int {
-        let trimmedText = context.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let textLength = min(trimmedText.count, 600)
-        let tokenCount = trimmedText.split(whereSeparator: \.isWhitespace).count
-
-        var score = textLength + (tokenCount * 8)
-
-        if trimmedText.isEmpty {
-            score -= 250
-        } else if textLength < 20 {
-            score -= 60
-        }
-
-        if Self.lowSignalApps.contains(context.app_name) {
-            score -= 120
-        }
-
-        let windowName = context.window_name.lowercased()
-        if Self.lowSignalWindowKeywords.contains(where: windowName.contains) {
-            score -= 80
-        }
-
-        if context.focused == true {
-            score += 50
-        }
-
-        // Prefer fresher records when quality is similar.
-        let recencyBoost = max(0, Int(timestamp(for: context).timeIntervalSince1970) % 60)
-        score += recencyBoost
-        return score
-    }
-
-    private static let lowSignalApps: Set<String> = [
-        "Control Centre",
-        "Dock",
-        "Notification Centre",
-    ]
-
-    private static let lowSignalWindowKeywords: [String] = [
-        "clock",
-        "battery",
-        "wifi",
-        "item-",
-        "bentobox",
-    ]
-
-    private static let minMeaningfulScore = 120
     private static let scopedQueryLimit = 5
     private static let globalQueryLimit = 20
-    private static let scopedMinLength = 400
-    private static let relaxedMinLength = 250
 
     private func setHealth(_ next: ServiceHealth) {
         guard health != next else { return }

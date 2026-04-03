@@ -118,10 +118,10 @@ final class ContextPollerTests: XCTestCase {
         XCTAssertEqual(client.recordedRequests.count, 2)
         XCTAssertEqual(client.recordedRequests[0].appName, "Antigravity")
         XCTAssertEqual(client.recordedRequests[0].windowName, "masko-assistant — README.md")
-        XCTAssertEqual(client.recordedRequests[0].minLength, 400)
+        XCTAssertNil(client.recordedRequests[0].minLength)
         XCTAssertEqual(client.recordedRequests[1].appName, "Antigravity")
         XCTAssertNil(client.recordedRequests[1].windowName)
-        XCTAssertEqual(client.recordedRequests[1].minLength, 250)
+        XCTAssertNil(client.recordedRequests[1].minLength)
         XCTAssertEqual(poller.current?.appName, "Antigravity")
     }
 
@@ -151,7 +151,7 @@ final class ContextPollerTests: XCTestCase {
         XCTAssertNil(client.recordedRequests[2].appName)
         XCTAssertNil(client.recordedRequests[2].windowName)
         XCTAssertEqual(client.recordedRequests[2].limit, 20)
-        XCTAssertEqual(client.recordedRequests[2].minLength, 400)
+        XCTAssertNil(client.recordedRequests[2].minLength)
         XCTAssertEqual(poller.current?.appName, "Codex")
     }
 
@@ -185,7 +185,7 @@ final class ContextPollerTests: XCTestCase {
     }
 
     @MainActor
-    func testPrefersMeaningfulTextOverLowSignalSystemWidgets() async {
+    func testPrefersNewestRecordWhenNoActiveOrFocusedContextExists() async {
         let lowSignal = ScreenpipeClient.ScreenpipeContext(
             app_name: "Control Centre",
             window_name: "Clock",
@@ -209,12 +209,12 @@ final class ContextPollerTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 1.0)
         poller.stop()
 
-        XCTAssertEqual(poller.current?.appName, "Codex")
-        XCTAssertEqual(poller.current?.windowTitle, "Codex")
+        XCTAssertEqual(poller.current?.appName, "Control Centre")
+        XCTAssertEqual(poller.current?.windowTitle, "Clock")
     }
 
     @MainActor
-    func testIgnoresLowSignalFocusedEntryWhenUnfocusedContextIsMeaningful() async {
+    func testPrefersFocusedContextWithoutJudgingCommentWorthiness() async {
         let focusedButLowSignal = ScreenpipeClient.ScreenpipeContext(
             app_name: "Control Centre",
             window_name: "Clock",
@@ -238,8 +238,8 @@ final class ContextPollerTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 1.0)
         poller.stop()
 
-        XCTAssertEqual(poller.current?.appName, "Sublime Text")
-        XCTAssertEqual(poller.current?.windowTitle, "Clippy.json")
+        XCTAssertEqual(poller.current?.appName, "Control Centre")
+        XCTAssertEqual(poller.current?.windowTitle, "Clock")
     }
 
     @MainActor
@@ -279,6 +279,47 @@ final class ContextPollerTests: XCTestCase {
         XCTAssertEqual(client.recordedRequests.count, 0)
         XCTAssertEqual(poller.current?.appName, "Finder")
         XCTAssertEqual(poller.current?.windowTitle, "Documents")
+    }
+
+    @MainActor
+    func testOnSnapshotFiresEvenWhenContextIsUnchanged() async {
+        let snapshot = ScreenpipeClient.ScreenpipeContext(
+            app_name: "masko-code",
+            window_name: "Activity Feed",
+            text: "same text",
+            timestamp: "2026-01-01T00:00:00Z",
+            focused: true
+        )
+        let client = MockScreenpipeClient(contextsByCall: [[snapshot], [snapshot]], healthy: true)
+        let poller = makePoller(client: client)
+
+        let first = expectation(description: "first snapshot")
+        let second = expectation(description: "second snapshot")
+        var snapshotCount = 0
+        var changedCount = 0
+
+        poller.onSnapshot = { _ in
+            snapshotCount += 1
+            if snapshotCount == 1 {
+                first.fulfill()
+            } else if snapshotCount == 2 {
+                second.fulfill()
+            }
+        }
+        poller.onContextChanged = { _ in
+            changedCount += 1
+        }
+
+        poller.start()
+        await fulfillment(of: [first], timeout: 1.0)
+        poller.stop()
+
+        poller.start()
+        await fulfillment(of: [second], timeout: 1.0)
+        poller.stop()
+
+        XCTAssertEqual(snapshotCount, 2)
+        XCTAssertEqual(changedCount, 1)
     }
 
     private func makePoller(

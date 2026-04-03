@@ -534,6 +534,12 @@ final class AppStore {
                 self?.screenpipeHealth = health
             }
         }
+
+        poller.onSnapshot = { [weak self] snapshot in
+            Task { @MainActor in
+                self?.behaviorEngine?.onContextChanged(snapshot)
+            }
+        }
         
         // Wire contextPoller -> Activity Feed (EventStore)
         poller.onContextChanged = { [weak self] snapshot in
@@ -549,7 +555,6 @@ final class AppStore {
             )
             Task { @MainActor in
                 self.eventStore.append(event)
-                self.behaviorEngine?.onContextChanged(snapshot)
             }
         }
 
