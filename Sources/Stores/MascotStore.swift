@@ -33,6 +33,7 @@ final class MascotStore {
         PresetInfo(slug: "rusty", filename: "rusty"),
         PresetInfo(slug: "nugget", filename: "nugget"),
         PresetInfo(slug: "clippy", filename: "clippy"),
+        PresetInfo(slug: "clawd", filename: "clawd"),
     ]
 
     /// Presets not yet added by the user.

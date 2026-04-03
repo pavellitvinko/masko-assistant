@@ -29,6 +29,12 @@ final class OverlayManager {
     private var permissionPanel: OverlayPanel? // Permission prompts — smart-positioned
     private var permissionHUDConfig = PermissionHUDConfig()
     private var workspaceObservers: [NSObjectProtocol] = []
+    
+    // Smart Mascot Extension
+    private var movementController: MovementController?
+    private var isSpatialMovementEnabled: () -> Bool = { false }
+    private var speechPanel: SpeechBubblePanel?
+    var onSpeechDismissed: (() -> Void)?
 
     // Overlay enabled/disabled (notification-only mode)
     // Stored property so @Observable can track it for SwiftUI reactivity
@@ -39,13 +45,13 @@ final class OverlayManager {
     }
 
     static func startupMascotConfig(from mascots: [SavedMascot]) -> MaskoAnimationConfig? {
-        if let clippy = mascots.first(where: { $0.templateSlug == "clippy" }) {
-            return clippy.config
+        if let clawd = mascots.first(where: { $0.templateSlug == "clawd" }) {
+            return clawd.config
         }
         if let first = mascots.first {
             return first.config
         }
-        return MascotStore.loadBundledConfig(named: "clippy")
+        return MascotStore.loadBundledConfig(named: "clawd")
     }
 
     // Snooze state
@@ -419,12 +425,14 @@ final class OverlayManager {
             panel?.animator().alphaValue = 0
             statsPanel?.animator().alphaValue = 0
             permissionPanel?.animator().alphaValue = 0
+            speechPanel?.animator().alphaValue = 0
         } completionHandler: { [weak self] in
             Task { @MainActor in
                 guard let self, self.isAutoHidden else { return }
                 self.panel?.orderOut(nil)
                 self.statsPanel?.orderOut(nil)
                 self.permissionPanel?.orderOut(nil)
+                self.speechPanel?.orderOut(nil)
                 print("[masko-desktop] Auto-hidden (no active sessions)")
             }
         }
@@ -438,9 +446,11 @@ final class OverlayManager {
         panel?.alphaValue = 0
         statsPanel?.alphaValue = 0
         permissionPanel?.alphaValue = 0
+        speechPanel?.alphaValue = 0
         panel?.orderFrontRegardless()
         statsPanel?.orderFrontRegardless()
         permissionPanel?.orderFrontRegardless()
+        speechPanel?.orderFrontRegardless()
 
         let savedOpacity = UserDefaults.standard.double(forKey: "overlay_opacity")
         let targetOpacity = savedOpacity > 0 ? savedOpacity : 1.0
@@ -451,6 +461,7 @@ final class OverlayManager {
             self.panel?.animator().alphaValue = targetOpacity
             self.statsPanel?.animator().alphaValue = 1.0
             self.permissionPanel?.animator().alphaValue = 1.0
+            self.speechPanel?.animator().alphaValue = 1.0
         }
 
         print("[masko-desktop] Auto-shown (session detected)")
@@ -531,6 +542,8 @@ final class OverlayManager {
 
         dismissContextMenu()
         dismissSessionSwitcher()
+        speechPanel?.close()
+        speechPanel = nil
         permissionPanel?.close()
         permissionPanel = nil
         statsPanel?.close()
@@ -578,6 +591,8 @@ final class OverlayManager {
 
         dismissContextMenu()
         dismissSessionSwitcher()
+        speechPanel?.close()
+        speechPanel = nil
         permissionPanel?.close()
         permissionPanel = nil
         statsPanel?.close()
@@ -805,6 +820,47 @@ final class OverlayManager {
         showOverlay(url: url)
         // Start auto-hide timer if no sessions active on launch
         updateAutoHideState(isWorking: sessionStore.activeSessions.contains { $0.phase == .running || $0.phase == .compacting })
+    }
+
+    // MARK: - Smart Mascot Movement & Speech
+
+    func bindToMovement(_ controller: MovementController, isEnabled: @escaping () -> Bool) {
+        self.movementController = controller
+        self.isSpatialMovementEnabled = isEnabled
+        controller.onPositionChanged = { [weak self] position in
+            guard let self,
+                  let panel = self.panel,
+                  self.isSpatialMovementEnabled() else { return }
+            
+            let size = panel.frame.size
+            let origin = CGPoint(
+                x: position.x - size.width / 2,
+                y: position.y - size.height / 2
+            )
+            let screen = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+            let clamped = Self.clampedMascotRect(origin: origin, side: size.width, screenFrame: screen)
+            panel.setFrame(clamped, display: false, animate: false)
+            self.scheduleHUDReposition()
+        }
+    }
+
+    func showSpeech(_ event: SpeechEvent) {
+        if speechPanel == nil {
+            speechPanel = SpeechBubblePanel()
+        }
+        guard let panel = self.panel else { return }
+        attachSpeechPanelIfNeeded()
+        let mascotFrame = panel.frame
+        let anchorPoint = CGPoint(x: mascotFrame.midX, y: mascotFrame.maxY)
+        speechPanel?.show(event: event, above: anchorPoint) { [weak self] userInitiated in
+            if userInitiated {
+                self?.onSpeechDismissed?()
+            }
+        }
+    }
+
+    func dismissSpeech() {
+        speechPanel?.dismiss(false)
     }
 
     // MARK: - Private
@@ -1108,6 +1164,24 @@ final class OverlayManager {
             permissionPanel.level = .screenSaver
             permissionPanel.orderFrontRegardless()
         }
+        attachSpeechPanelIfNeeded()
+        if let speechPanel {
+            speechPanel.level = .screenSaver
+            speechPanel.orderFrontRegardless()
+        }
+    }
+
+    /// Keep the speech bubble in the same window hierarchy so it stays above the overlay HUD.
+    private func attachSpeechPanelIfNeeded() {
+        guard let speechPanel, let parent = speechPanelParent() else { return }
+        if speechPanel.parent !== parent {
+            speechPanel.parent?.removeChildWindow(speechPanel)
+            parent.addChildWindow(speechPanel, ordered: .above)
+        }
+    }
+
+    private func speechPanelParent() -> NSWindow? {
+        permissionPanel ?? statsPanel ?? panel
     }
 
     private func resizePanelToPixels(_ pixels: Int) {

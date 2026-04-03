@@ -10,6 +10,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu bar only — no dock icon
         NSApp.setActivationPolicy(.accessory)
         UserDefaults.standard.register(defaults: ["overlay_enabled": true])
+        SmartFeatureSettings.registerDefaults()
+        SmartFeatureSettings.migrateLegacySettings()
         registerBundledFonts()
     }
 
@@ -178,6 +180,32 @@ struct MaskoDesktopApp: App {
                         overlayManager?.repositionForToast()
                     }
                     await appStore.start()
+
+                    // ── Smart Mascot Wiring ──
+                    if let behavior = appStore.behaviorEngine {
+                        behavior.onStateChanged = { [weak overlayManager] output in
+                            guard let sm = overlayManager?.currentStateMachine else { return }
+                            sm.setInput("mascot_mood", .number(Double(output.mood.rawValue)))
+                            sm.setInput("mascot_behavior", .number(Double(output.state.rawValue)))
+                            sm.setInput("mascot_speaking", .bool(output.isSpeaking))
+                        }
+                        behavior.onSpeech = { [weak overlayManager] event in
+                            overlayManager?.showSpeech(event)
+                        }
+                        behavior.onDismissSpeech = { [weak overlayManager] in
+                            overlayManager?.dismissSpeech()
+                        }
+                        overlayManager.onSpeechDismissed = { [weak behavior] in
+                            behavior?.onBubbleDismissed()
+                        }
+                    }
+
+                    if let movement = appStore.movementController {
+                        overlayManager.bindToMovement(movement) {
+                            appStore.smartFeatureSettings.spatialEnabled
+                        }
+                    }
+
                     overlayManager.restoreIfNeeded()
 
                     // First-run fallback: if onboarding is complete but no mascot was ever activated,

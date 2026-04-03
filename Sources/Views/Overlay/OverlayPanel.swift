@@ -2,7 +2,7 @@ import AppKit
 
 /// A transparent, always-on-top, non-focus-stealing panel for the mascot overlay.
 /// Stays visible across fullscreen apps, Mission Control, Space switches, and Cmd+Tab.
-final class OverlayPanel: NSPanel {
+class OverlayPanel: NSPanel {
     var onRightClick: ((NSPoint) -> Void)?
 
     init(contentRect: NSRect) {

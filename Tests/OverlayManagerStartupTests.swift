@@ -3,7 +3,7 @@ import XCTest
 
 final class OverlayManagerStartupTests: XCTestCase {
     @MainActor
-    func testStartupMascotPrefersClippyWhenAvailable() {
+    func testStartupMascotPrefersClawdWhenAvailable() {
         let other = SavedMascot(
             id: UUID(),
             name: "Other",
@@ -11,17 +11,17 @@ final class OverlayManagerStartupTests: XCTestCase {
             addedAt: Date(),
             templateSlug: "other"
         )
-        let clippy = SavedMascot(
+        let clawd = SavedMascot(
             id: UUID(),
-            name: "Clippy",
-            config: makeConfig(name: "Clippy"),
+            name: "Clawd",
+            config: makeConfig(name: "Clawd"),
             addedAt: Date(),
-            templateSlug: "clippy"
+            templateSlug: "clawd"
         )
 
-        let chosen = OverlayManager.startupMascotConfig(from: [other, clippy])
+        let chosen = OverlayManager.startupMascotConfig(from: [other, clawd])
 
-        XCTAssertEqual(chosen?.name, "Clippy")
+        XCTAssertEqual(chosen?.name, "Clawd")
     }
 
     @MainActor
@@ -65,7 +65,8 @@ final class OverlayManagerStartupTests: XCTestCase {
                     conditions: nil,
                     videos: MaskoAnimationVideos(webm: nil, hevc: nil),
                     priority: nil,
-                    speed: nil
+                    speed: nil,
+                    sound: nil
                 ),
             ],
             inputs: nil
